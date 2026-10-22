@@ -1,0 +1,5 @@
+pymobiledevice3>=8.0.0
+PySide6-Essentials; sys_platform != 'linux'
+PySide6; sys_platform == 'linux'
+PyInstaller
+readchar

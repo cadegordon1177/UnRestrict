@@ -1,0 +1,84 @@
+from sys import platform, argv
+import os
+import shutil # Added for the macOS fix
+import PyInstaller.__main__
+
+target_arch = next((arg for arg in argv if arg.startswith("--target-arch=")), None)
+if target_arch:
+    print(f"[+] Target arch: {target_arch}")
+
+# Base PyInstaller args
+args = [
+    'main_app.py',
+    '--name=UnRestrict',
+    '--icon=unrestrict.icns',
+    '--onedir',
+    '--noconfirm',
+    '--collect-all=pymobiledevice3',  # Forces inclusion of __main__.py
+    '--add-data=files/:files',
+    '--copy-metadata=pyimg4',
+    '--hidden-import=zeroconf',
+    '--hidden-import=pyimg4',
+    '--hidden-import=zeroconf._utils.ipaddress',
+    '--hidden-import=zeroconf._handlers.answers',
+    '--hidden-import=inquirer',
+    '--hidden-import=readchar',
+    '--copy-metadata=readchar',
+    '--hidden-import=PySide6.QtSvg',
+    '--hidden-import=PySide6.QtSvgWidgets',
+]
+
+if target_arch:
+    args.append(target_arch)
+
+# macOS-specific flags
+if platform == "darwin":
+    
+    # --- MACOS OPENSSL FIX ---
+    # Delete sslpsk_pmd3's bundled OpenSSL before PyInstaller collects it.
+    # This forces fallback to Python's built-in _ssl without breaking codesign.
+    try:
+        import sslpsk_pmd3
+        sslpsk_path = os.path.dirname(sslpsk_pmd3.__file__)
+        dylibs_path = os.path.join(sslpsk_path, "__dot__dylibs")
+        if os.path.exists(dylibs_path):
+            print(f"[-] macOS Fix: Removing conflicting bundled dylibs from {dylibs_path}")
+            shutil.rmtree(dylibs_path, ignore_errors=True)
+    except ImportError:
+        print("[!] sslpsk_pmd3 not found, skipping macOS dylib cleanup.")
+    # -------------------------
+
+    args.append('--windowed')
+    args.append('--osx-bundle-identifier=com.unrestrict.app')
+
+    try:
+        import secrets_unrestrict.compile_config as compile_config
+        args.append('--osx-entitlements-file=entitlements.plist')
+        args.append(f"--codesign-identity={compile_config.CODESIGN_HASH}")
+    except ImportError:
+        print("[!] Codesign skipped: compile_config not found")
+
+elif os.name == 'nt':
+    args.append('--version-file=version.txt')
+    args.append('--add-binary=status_setter_windows.exe;.')
+    args.append('--add-data=unrestrict.ico;.')
+    
+    try:
+        import pytun_pmd3
+        package_path = os.path.dirname(pytun_pmd3.__file__)
+        print(f"[+] Found pytun_pmd3 at: {package_path}")
+        args.append('--add-binary')
+        args.append(f"{package_path}/*;pytun_pmd3")
+    except ImportError:
+        print("[!] ERROR: Could not import pytun_pmd3. Ensure it is installed with pip.")
+        import site
+        site_packages_path = site.getsitepackages()[1]
+        args.append('--add-binary')
+        args.append(f"{site_packages_path}/pytun_pmd3/*;pytun_pmd3")
+
+    if os.path.isdir("ffmpeg/bin"):
+        args.append('--add-data=ffmpeg/bin;ffmpeg/bin')
+    else:
+        print("[!] ffmpeg not bundled: folder not found")
+
+PyInstaller.__main__.run(args)
