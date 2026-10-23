@@ -17,9 +17,9 @@ class PreferenceManager:
         self.restore_truststore = False
         self.bookrestore_apply_mode = BookRestoreApplyMethod.AFC
         self.bookrestore_transfer_mode = BookRestoreFileTransferMethod.LocalHost
-        # Off: a skip-setup cloud config is not needed for daemon changes and
-        # made devices look freshly set up / managed.
-        self.skip_setup = False
+        # On: a domain restore makes iOS boot into Setup Assistant unless we
+        # mark setup complete, so skip-setup keeps the device on the home screen.
+        self.skip_setup = True
         self.supervised = False
         self.organization_name = ""
 

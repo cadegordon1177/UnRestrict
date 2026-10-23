@@ -629,10 +629,9 @@ class DeviceManager:
     def apply_changes(self, update_label=lambda x: None, show_alert=lambda x: None):
         asyncio.run(self._apply_changes(update_label, show_alert))
     async def _apply_changes(self, update_label=lambda x: None, show_alert=lambda x: None):
-        # Daemon-only apply flow. It deliberately does NOT inject a skip-setup
-        # cloud configuration: that is only needed when a full restore would
-        # strand the device in Setup, and for daemon changes it instead made the
-        # device look freshly set up / managed. See restore_defaults for the undo.
+        # Daemon-only apply flow. Writing to domains makes iOS boot into Setup
+        # Assistant on the next reboot, so add_skip_setup marks setup complete
+        # (unsupervised) to keep the device on the home screen.
         files_to_restore: list[FileToRestore] = []
         try:
             update_label(QCoreApplication.tr("Validating device..."))
@@ -661,6 +660,7 @@ class DeviceManager:
             # Generate backup
             update_label(QCoreApplication.tr("Building payload..."))
             self.add_rebuild_sb_application_state_db(files_to_restore)
+            await self.add_skip_setup(files_to_restore, uses_domains and not use_bookrestore)
 
             for location, plist in basic_plists.items():
                 ownership = basic_plists_ownership.get(location, 501)
@@ -716,8 +716,12 @@ class DeviceManager:
         asyncio.run(self._restore_defaults(update_label, show_alert))
 
     async def _restore_defaults(self, update_label=lambda x: None, show_alert=lambda x: None):
-        """Undo everything an injection changed, including the cloud config that
-        earlier versions wrote (which made the device look freshly set up)."""
+        """Re-enable every daemon and return the device to a normal state.
+
+        Like the apply, this restores to domains, so it also marks setup
+        complete (unsupervised) via add_skip_setup to keep the device off the
+        Setup Assistant screen after the reboot.
+        """
         files_to_restore: list[FileToRestore] = []
         try:
             update_label(QCoreApplication.tr("Validating device..."))
@@ -731,24 +735,7 @@ class DeviceManager:
                 owner=0, group=0
             )
 
-            # Clear the skip-setup cloud configuration. An empty plist here drops
-            # the "configuration was applied" flags that made the phone behave
-            # like a fresh/managed device.
-            files_to_restore.append(FileToRestore(
-                contents=plistlib.dumps({}),
-                restore_path="Library/ConfigurationProfiles/CloudConfigurationDetails.plist",
-                domain="SysSharedContainerDomain-systemgroup.com.apple.configurationprofiles"
-            ))
-            # Keep setup marked complete so the device never boots into Setup.
-            files_to_restore.append(FileToRestore(
-                contents=plistlib.dumps({
-                    "SetupDone": True,
-                    "SetupFinishedAllSteps": True,
-                    "UserChoseLanguage": True,
-                }),
-                restore_path="mobile/com.apple.purplebuddy.plist",
-                domain="ManagedPreferencesDomain"
-            ))
+            await self.add_skip_setup(files_to_restore, True)
 
             final_alert = await self.start_restore(files_to_restore, False, update_label)
             update_label(QCoreApplication.tr("Success!"))

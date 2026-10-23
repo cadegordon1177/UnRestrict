@@ -65,6 +65,11 @@ class SettingsDialog(QDialog):
 
         lay.addWidget(SectionLabel("Safety"))
         lay.addWidget(_ToggleRow(
+            "Skip Setup Assistant",
+            "Keeps the device on the home screen after a reboot instead of the "
+            "Setup screen. Leave this on unless you know you need it off.",
+            self.dm.pref_manager.skip_setup, self._set_skip_setup))
+        lay.addWidget(_ToggleRow(
             "Reboot automatically after applying",
             "Let the device restart on its own once changes are written.",
             self.dm.pref_manager.auto_reboot, self._set_auto_reboot))
@@ -96,3 +101,6 @@ class SettingsDialog(QDialog):
 
     def _set_auto_reboot(self, value):
         self.dm.pref_manager.auto_reboot = value
+
+    def _set_skip_setup(self, value):
+        self.dm.pref_manager.skip_setup = value
