@@ -17,7 +17,9 @@ class PreferenceManager:
         self.restore_truststore = False
         self.bookrestore_apply_mode = BookRestoreApplyMethod.AFC
         self.bookrestore_transfer_mode = BookRestoreFileTransferMethod.LocalHost
-        self.skip_setup = True
+        # Off: a skip-setup cloud config is not needed for daemon changes and
+        # made devices look freshly set up / managed.
+        self.skip_setup = False
         self.supervised = False
         self.organization_name = ""
 

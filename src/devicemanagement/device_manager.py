@@ -629,10 +629,10 @@ class DeviceManager:
     def apply_changes(self, update_label=lambda x: None, show_alert=lambda x: None):
         asyncio.run(self._apply_changes(update_label, show_alert))
     async def _apply_changes(self, update_label=lambda x: None, show_alert=lambda x: None):
-        # UnRestrict only ships daemon-disabling tweaks, so this is the trimmed
-        # version of UnRestrict's apply flow. The payload-building helpers
-        # (concat_file, add_skip_setup, add_rebuild_sb_application_state_db) and
-        # the restore mechanism (start_restore -> restore_files) are untouched.
+        # Daemon-only apply flow. It deliberately does NOT inject a skip-setup
+        # cloud configuration: that is only needed when a full restore would
+        # strand the device in Setup, and for daemon changes it instead made the
+        # device look freshly set up / managed. See restore_defaults for the undo.
         files_to_restore: list[FileToRestore] = []
         try:
             update_label(QCoreApplication.tr("Validating device..."))
@@ -661,7 +661,6 @@ class DeviceManager:
             # Generate backup
             update_label(QCoreApplication.tr("Building payload..."))
             self.add_rebuild_sb_application_state_db(files_to_restore)
-            await self.add_skip_setup(files_to_restore, uses_domains and not use_bookrestore)
 
             for location, plist in basic_plists.items():
                 ownership = basic_plists_ownership.get(location, 501)
@@ -695,6 +694,63 @@ class DeviceManager:
 
             # restore to the device
             final_alert = await self.start_restore(files_to_restore, use_bookrestore, update_label)
+            update_label(QCoreApplication.tr("Success!"))
+        except Exception as e:
+            final_alert = show_apply_error(e, update_label, files_list=files_to_restore)
+        finally:
+            close_dl_connection()
+            show_alert(final_alert)
+
+    # Baseline disabled.plist: the daemons iOS keeps off by default. Writing only
+    # these re-enables everything UnRestrict can disable.
+    DEFAULT_DISABLED_DAEMONS = {
+        "com.apple.magicswitchd.companion": True,
+        "com.apple.security.otpaird": True,
+        "com.apple.dhcp6d": True,
+        "com.apple.bootpd": True,
+        "com.apple.ftp-proxy-embedded": False,
+        "com.apple.relevanced": True,
+    }
+
+    def restore_defaults(self, update_label=lambda x: None, show_alert=lambda x: None):
+        asyncio.run(self._restore_defaults(update_label, show_alert))
+
+    async def _restore_defaults(self, update_label=lambda x: None, show_alert=lambda x: None):
+        """Undo everything an injection changed, including the cloud config that
+        earlier versions wrote (which made the device look freshly set up)."""
+        files_to_restore: list[FileToRestore] = []
+        try:
+            update_label(QCoreApplication.tr("Validating device..."))
+            update_label(QCoreApplication.tr("Building restore payload..."))
+
+            # Re-enable every daemon (Screen Time, usage tracking, location, ...).
+            self.concat_file(
+                contents=plistlib.dumps(self.DEFAULT_DISABLED_DAEMONS),
+                path=FileLocation.disabledDaemons.value,
+                files_to_restore=files_to_restore,
+                owner=0, group=0
+            )
+
+            # Clear the skip-setup cloud configuration. An empty plist here drops
+            # the "configuration was applied" flags that made the phone behave
+            # like a fresh/managed device.
+            files_to_restore.append(FileToRestore(
+                contents=plistlib.dumps({}),
+                restore_path="Library/ConfigurationProfiles/CloudConfigurationDetails.plist",
+                domain="SysSharedContainerDomain-systemgroup.com.apple.configurationprofiles"
+            ))
+            # Keep setup marked complete so the device never boots into Setup.
+            files_to_restore.append(FileToRestore(
+                contents=plistlib.dumps({
+                    "SetupDone": True,
+                    "SetupFinishedAllSteps": True,
+                    "UserChoseLanguage": True,
+                }),
+                restore_path="mobile/com.apple.purplebuddy.plist",
+                domain="ManagedPreferencesDomain"
+            ))
+
+            final_alert = await self.start_restore(files_to_restore, False, update_label)
             update_label(QCoreApplication.tr("Success!"))
         except Exception as e:
             final_alert = show_apply_error(e, update_label, files_list=files_to_restore)
@@ -793,9 +849,6 @@ class DeviceManager:
                     files_to_restore=files_to_restore,
                     use_bookrestore=use_bookrestore
                 )
-            
-            if not use_bookrestore:
-                await self.add_skip_setup(files_to_restore, uses_domains)
 
             # restore to the device
             final_alert = await self.start_restore(files_to_restore, use_bookrestore, update_label)

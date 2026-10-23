@@ -201,9 +201,7 @@ class InjectThread(QThread):
                 self._show_alert(msg)
 
             if self.mode == "restore":
-                from src.gui.pages.pages_list import Page
-                self.dm.reset_tweaks([Page.Daemons], self.settings,
-                                     self._update_label, capture)
+                self.dm.restore_defaults(self._update_label, capture)
             else:
                 self.dm.apply_changes(self._update_label, capture)
         except Exception as e:
