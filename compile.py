@@ -26,6 +26,7 @@ args = [
     '--copy-metadata=readchar',
     '--hidden-import=PySide6.QtSvg',
     '--hidden-import=PySide6.QtSvgWidgets',
+    '--collect-submodules=src.goldenrestore',
 ]
 
 if target_arch:

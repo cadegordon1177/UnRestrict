@@ -1,7 +1,10 @@
 from enum import Enum
 
 MIN_VERSION = "17.0"
-MAX_VERSION = "26.9"
+MAX_VERSION = "27.9"
+# iOS 26.2+ needs the GoldenRestore six-phase protective restore, not the
+# legacy sparse/book restore. Below this we use the original engine.
+PROTECTIVE_RESTORE_MIN = "26.2"
 
 class Device:
     def __init__(self, 
@@ -57,6 +60,9 @@ class Device:
         parsed_ver: Version = Version(self.version)
         # make sure it is above the minimum version and below max version
         return parsed_ver >= Version(MIN_VERSION) and parsed_ver <= Version(MAX_VERSION)
+    def uses_protective_restore(self) -> bool:
+        # iOS 26.2+ routes through the GoldenRestore protective engine.
+        return Version(self.version) >= Version(PROTECTIVE_RESTORE_MIN)
 
 class Version:
     def __init__(self, major: int, minor: int = 0, patch: int = 0):

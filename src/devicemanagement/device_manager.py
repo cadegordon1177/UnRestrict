@@ -659,47 +659,116 @@ class DeviceManager:
 
             # Generate backup
             update_label(QCoreApplication.tr("Building payload..."))
-            self.add_rebuild_sb_application_state_db(files_to_restore)
-            await self.add_skip_setup(files_to_restore, uses_domains and not use_bookrestore)
+            if self._uses_golden():
+                # iOS 26.2+: hand the raw files to the GoldenRestore engine,
+                # which builds its own backup and handles skip-setup internally.
+                raw_files = [(loc.value, plistlib.dumps(plist),
+                              basic_plists_ownership.get(loc, 501))
+                             for loc, plist in basic_plists.items()]
+                raw_files += [(loc.value,
+                               data if isinstance(data, (bytes, bytearray)) else b"",
+                               501)
+                              for loc, data in files_data.items()]
+                final_alert = await self._golden_restore(raw_files, update_label)
+            else:
+                self.add_rebuild_sb_application_state_db(files_to_restore)
+                await self.add_skip_setup(files_to_restore, uses_domains and not use_bookrestore)
 
-            for location, plist in basic_plists.items():
-                ownership = basic_plists_ownership.get(location, 501)
-                self.concat_file(
-                    contents=plistlib.dumps(plist),
-                    path=location.value,
-                    files_to_restore=files_to_restore,
-                    owner=ownership, group=ownership, use_bookrestore=use_bookrestore
-                )
-            for location, data in files_data.items():
-                ownership = data.owner if isinstance(data, NullifyFileTweak) else 501
-                self.concat_file(
-                    contents=data,
-                    path=location.value,
-                    files_to_restore=files_to_restore,
-                    owner=ownership, group=ownership, use_bookrestore=use_bookrestore
-                )
+                for location, plist in basic_plists.items():
+                    ownership = basic_plists_ownership.get(location, 501)
+                    self.concat_file(
+                        contents=plistlib.dumps(plist),
+                        path=location.value,
+                        files_to_restore=files_to_restore,
+                        owner=ownership, group=ownership, use_bookrestore=use_bookrestore
+                    )
+                for location, data in files_data.items():
+                    ownership = data.owner if isinstance(data, NullifyFileTweak) else 501
+                    self.concat_file(
+                        contents=data,
+                        path=location.value,
+                        files_to_restore=files_to_restore,
+                        owner=ownership, group=ownership, use_bookrestore=use_bookrestore
+                    )
 
-            # Restore SSL Configuration Profiles (only when restoring to domains)
-            if uses_domains and self.pref_manager.restore_truststore:
-                with open(get_bundle_files('files/SSLconf/TrustStore.sqlite3'), 'rb') as f:
-                    certsDB = f.read()
+                # Restore SSL Configuration Profiles (only when restoring to domains)
+                if uses_domains and self.pref_manager.restore_truststore:
+                    with open(get_bundle_files('files/SSLconf/TrustStore.sqlite3'), 'rb') as f:
+                        certsDB = f.read()
 
-                files_to_restore.append(FileToRestore(
-                    contents=certsDB,
-                    restore_path="trustd/private/TrustStore.sqlite3",
-                    domain="ProtectedDomain",
-                    owner=501, group=501,
-                    mode=_FileMode.S_IRUSR | _FileMode.S_IWUSR  | _FileMode.S_IRGRP | _FileMode.S_IWGRP | _FileMode.S_IROTH | _FileMode.S_IWOTH
-                ))
+                    files_to_restore.append(FileToRestore(
+                        contents=certsDB,
+                        restore_path="trustd/private/TrustStore.sqlite3",
+                        domain="ProtectedDomain",
+                        owner=501, group=501,
+                        mode=_FileMode.S_IRUSR | _FileMode.S_IWUSR  | _FileMode.S_IRGRP | _FileMode.S_IWGRP | _FileMode.S_IROTH | _FileMode.S_IWOTH
+                    ))
 
-            # restore to the device
-            final_alert = await self.start_restore(files_to_restore, use_bookrestore, update_label)
+                final_alert = await self.start_restore(files_to_restore, use_bookrestore, update_label)
             update_label(QCoreApplication.tr("Success!"))
         except Exception as e:
             final_alert = show_apply_error(e, update_label, files_list=files_to_restore)
         finally:
             close_dl_connection()
             show_alert(final_alert)
+
+    def _uses_golden(self) -> bool:
+        dev = self.data_singleton.current_device
+        return dev is not None and dev.uses_protective_restore()
+
+    async def _golden_restore(self, raw_files, update_label):
+        """Run the GoldenRestore protective engine for iOS 26.2+ devices.
+
+        raw_files is a list of (absolute_path, contents_bytes, owner). The paths
+        are mapped to backup domains with GoldenRestore's own table so the
+        payload lands exactly where its engine expects.
+        """
+        from src.goldenrestore import restore_files as gr_restore_files
+        from src.goldenrestore import FileToRestore as GRFile
+        from src.goldenrestore.src.path_mapping import split_path_into_domain
+
+        gr_files = []
+        for path, contents, owner in raw_files:
+            domain, rel = split_path_into_domain(path)
+            gr_files.append(GRFile(
+                contents=contents,
+                restore_path=rel if domain else path,
+                domain=domain or "",
+                owner=owner, group=owner,
+            ))
+
+        if getattr(self, "dry_run", False):
+            update_label(QCoreApplication.tr("[DRY RUN] Payload built. Skipping restore."))
+            for f in gr_files:
+                print(f"  {f.domain} :: {f.restore_path}")
+            return ApplyAlertMessage(
+                txt=QCoreApplication.tr("Dry run complete. {0} file(s) prepared, nothing sent.").format(len(gr_files)),
+                title=QCoreApplication.tr("Dry Run"), icon=QMessageBox.Information)
+
+        def progress(value):
+            if isinstance(value, (int, float)):
+                update_label(QCoreApplication.tr("Restoring to device... ({0:.0f}% )").format(value))
+            else:
+                update_label(str(value))
+
+        ld = await create_using_usbmux(serial=self.get_current_device_udid())
+        try:
+            await gr_restore_files(
+                files=gr_files, reboot=self.pref_manager.auto_reboot,
+                lockdown_client=ld, progress_callback=progress,
+                skip_setup=self.pref_manager.skip_setup,
+            )
+        finally:
+            try:
+                await ld.close()
+            except Exception:
+                pass
+
+        msg = QCoreApplication.tr("Your device will now restart.\n\nRemember to turn Find My back on!")
+        if not self.pref_manager.auto_reboot:
+            msg = QCoreApplication.tr("Please restart your device to see changes.")
+        return ApplyAlertMessage(txt=QCoreApplication.tr("All done! ") + msg,
+                                 title=QCoreApplication.tr("Success!"), icon=QMessageBox.Information)
 
     # Baseline disabled.plist: the daemons iOS keeps off by default. Writing only
     # these re-enables everything UnRestrict can disable.
@@ -727,17 +796,22 @@ class DeviceManager:
             update_label(QCoreApplication.tr("Validating device..."))
             update_label(QCoreApplication.tr("Building restore payload..."))
 
-            # Re-enable every daemon (Screen Time, usage tracking, location, ...).
-            self.concat_file(
-                contents=plistlib.dumps(self.DEFAULT_DISABLED_DAEMONS),
-                path=FileLocation.disabledDaemons.value,
-                files_to_restore=files_to_restore,
-                owner=0, group=0
-            )
-
-            await self.add_skip_setup(files_to_restore, True)
-
-            final_alert = await self.start_restore(files_to_restore, False, update_label)
+            baseline = plistlib.dumps(self.DEFAULT_DISABLED_DAEMONS)
+            if self._uses_golden():
+                # iOS 26.2+: re-enable the daemons through the protective engine
+                # (it handles skip-setup itself).
+                final_alert = await self._golden_restore(
+                    [(FileLocation.disabledDaemons.value, baseline, 0)], update_label)
+            else:
+                # Re-enable every daemon (Screen Time, usage tracking, location, ...).
+                self.concat_file(
+                    contents=baseline,
+                    path=FileLocation.disabledDaemons.value,
+                    files_to_restore=files_to_restore,
+                    owner=0, group=0
+                )
+                await self.add_skip_setup(files_to_restore, True)
+                final_alert = await self.start_restore(files_to_restore, False, update_label)
             update_label(QCoreApplication.tr("Success!"))
         except Exception as e:
             final_alert = show_apply_error(e, update_label, files_list=files_to_restore)
